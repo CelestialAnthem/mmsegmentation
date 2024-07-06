@@ -112,44 +112,71 @@ def is_position_valid(avg_x, avg_y, text_size, existing_labels, buffer=10):
     return True
 
 def tensor_to_image(tensor, color_dict, classes, original_img, alpha=0.8, add_labels=True):
+    # 开始计时
+    start_time = time.time()
+    
+    # Step 1: 数据预处理
+    pre_process_start_time = time.time()
+    
+    # Sub-step 1: tensor squeeze and move to CUDA
+    squeeze_cuda_start_time = time.time()
     tensor = tensor.squeeze(0).to('cuda')
+    squeeze_cuda_end_time = time.time()
+    logger.info(f"Tensor squeeze and move to CUDA time: {squeeze_cuda_end_time - squeeze_cuda_start_time:.2f} seconds.")
+    
+    # Sub-step 2: tensor flatten and move to CPU
+    flatten_cpu_start_time = time.time()
+    tensor_flat = tensor.flatten().cpu().numpy()
+    flatten_cpu_end_time = time.time()
+    logger.info(f"Tensor flatten and move to CPU time: {flatten_cpu_end_time - flatten_cpu_start_time:.2f} seconds.")
+    
     h, w = tensor.shape
-
     scale_factor = h / 2160
     font_size = int(48 * scale_factor)
     distance_threshold = 1500 * scale_factor
     move_distance = int(100 * scale_factor)
-
     font = ImageFont.truetype("/root/mmsegmentation/data/Arial.ttf", font_size)
-
-    tensor_flat = tensor.flatten().cpu().numpy()
     unique_categories = np.unique(tensor_flat)
+    pre_process_end_time = time.time()
+    logger.info(f"Data pre-processing time: {pre_process_end_time - pre_process_start_time:.2f} seconds.")
+    
+    # Step 2: 创建颜色数组
+    color_array_creation_start_time = time.time()
     color_array = np.zeros((tensor_flat.size, 4), dtype=np.uint8)
-
     for category in unique_categories:
         color = color_dict.get(category, (0, 0, 0))
         indices = np.where(tensor_flat == category)
         color_array[indices] = [*color, int(255 * alpha)]
-
     color_array = color_array.reshape(h, w, 4)
+    color_array_creation_end_time = time.time()
+    logger.info(f"Color array creation time: {color_array_creation_end_time - color_array_creation_start_time:.2f} seconds.")
+    
+    # Step 3: 创建图像叠加层
+    overlay_creation_start_time = time.time()
     overlay = Image.fromarray(color_array, 'RGBA')
     draw = ImageDraw.Draw(overlay)
+    overlay_creation_end_time = time.time()
+    logger.info(f"Overlay creation time: {overlay_creation_end_time - overlay_creation_start_time:.2f} seconds.")
     
-
+    # Step 4: 标签位置计算
+    label_positioning_start_time = time.time()
     label_positions = {}
     for category in unique_categories:
         positions = np.column_stack(np.where(tensor.cpu().numpy() == category))
         label_positions[category] = positions.tolist()
-
+    label_positioning_end_time = time.time()
+    logger.info(f"Label positioning time: {label_positioning_end_time - label_positioning_start_time:.2f} seconds.")
+    
     existing_labels = []
 
+    # Step 5: 添加标签
     if add_labels:
+        add_labels_start_time = time.time()
         for category, positions in label_positions.items():
             if category < len(classes):
                 mask = np.zeros((h, w), dtype=np.uint8)
                 mask[positions[:, 0], positions[:, 1]] = 255
                 num_labels, labels_im = cv2.connectedComponents(mask)
-
                 avg_positions = []
                 for label in range(1, num_labels):
                     component_mask = (labels_im == label)
@@ -157,7 +184,6 @@ def tensor_to_image(tensor, color_dict, classes, original_img, alpha=0.8, add_la
                     avg_x = np.mean(component_positions[:, 1])
                     avg_y = np.mean(component_positions[:, 0])
                     avg_positions.append((int(avg_x), int(avg_y)))
-
                 merged_positions = []
                 while avg_positions:
                     pos = avg_positions.pop(0)
@@ -172,10 +198,8 @@ def tensor_to_image(tensor, color_dict, classes, original_img, alpha=0.8, add_la
                     merged_avg_x = int(np.mean([p[0] for p in merged_cluster]))
                     merged_avg_y = int(np.mean([p[1] for p in merged_cluster]))
                     merged_positions.append((merged_avg_x, merged_avg_y))
-
                 if len(merged_positions) > 3:
                     merged_positions = merged_positions[:2]
-
                 for avg_x, avg_y in merged_positions:
                     text = classes[category]
                     text_size = draw.textsize(text, font=font)
@@ -185,18 +209,26 @@ def tensor_to_image(tensor, color_dict, classes, original_img, alpha=0.8, add_la
                             if is_position_valid(new_x, new_y, text_size, existing_labels):
                                 avg_x, avg_y = new_x, new_y
                                 break
-
                     background_pos = (avg_x - (text_size[0]) // 2, avg_y - (text_size[1]) // 2)
                     draw.rectangle([background_pos, (background_pos[0] + text_size[0], background_pos[1] + text_size[1])], fill=(0, 0, 0))
                     bright_text_color = adjust_brightness(category_colors[category], 1.5)
                     text_pos = (background_pos[0] + (text_size[0] - text_size[0]) // 2, background_pos[1] + (text_size[1] - text_size[1]) // 2)
                     draw.text(text_pos, text, fill=bright_text_color, font=font)
                     existing_labels.append((background_pos[0], background_pos[1], text_size[0], text_size[1]))
-
+        add_labels_end_time = time.time()
+        logger.info(f"Adding labels time: {add_labels_end_time - add_labels_start_time:.2f} seconds.")
+        
+        # Step 6: 图像合并
+        combine_images_start_time = time.time()
         combined_img = Image.alpha_composite(original_img.convert('RGBA'), overlay)
         final_image = combined_img.convert('RGB')
+        combine_images_end_time = time.time()
+        logger.info(f"Combining images time: {combine_images_end_time - combine_images_start_time:.2f} seconds.")
     else:
         final_image = overlay
+
+    end_time = time.time()
+    logger.info(f"Total tensor_to_image processing time: {end_time - start_time:.2f} seconds.")
 
     return final_image
 
