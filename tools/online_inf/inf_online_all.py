@@ -203,12 +203,18 @@ def process_batch(batch):
         oss_path = upload_img(out_path)
         logger.info(f'Processed and saved result for image: {oss_path}')
         
-        with open(json_path, 'r') as f:
-            json_data = json.load(f)
+        output_json_path = os.path.join(output_json_dir, os.path.basename(json_path))
+        if os.path.exists(output_json_path):
+            with open(output_json_path, 'r') as f:
+                json_data = json.load(f)
+        else:
+            with open(json_path, 'r') as f:
+                json_data = json.load(f)
         img_info = json_data['camera']
         for view in img_info:
-            view['semantic_oss_path'] = oss_path
-        output_json_path = os.path.join(output_json_dir, os.path.basename(json_path))
+            if img_path == os.path.join('/', view['oss_path']):
+                view['semantic_oss_path'] = oss_path
+        
         os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
         with open(output_json_path, 'w') as f:
             json.dump(json_data, f, indent=4)
