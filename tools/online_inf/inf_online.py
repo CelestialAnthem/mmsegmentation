@@ -232,6 +232,15 @@ def tensor_to_image(tensor, color_dict, classes, original_img, alpha=0.8, add_la
 
     return final_image
 
+def tensor_to_image_2(tensor, color_dict, classes, original_img, alpha=0.8, add_labels=True):
+    tensor_img_cpu = tensor.cpu().numpy()
+    rgb_image = np.zeros((tensor_img_cpu.shape[0], tensor_img_cpu.shape[1], 3), dtype=np.uint8)
+    for category, color in color_dict.items():
+        rgb_image[tensor_img_cpu == category] = color
+
+    output_image = Image.fromarray(rgb_image, 'RGB')
+    return output_image
+
 def load_image(img_path):
     start_time = time.time()
     image = Image.open(img_path).convert('RGB')
@@ -264,7 +273,7 @@ def process_batch(batch):
         
         # 记录图像转换时间
         convert_image_start_time = time.time()
-        img_result = tensor_to_image(tensor_img, category_colors, classes, original_img, alpha=1.0, add_labels=False)
+        img_result = tensor_to_image_2(tensor_img, category_colors, classes, original_img, alpha=1.0, add_labels=False)
         convert_image_end_time = time.time()
         logger.info(f"Converting tensor to image time: {convert_image_end_time - convert_image_start_time:.2f} seconds.")
         
