@@ -11,6 +11,9 @@ import cv2
 import json, uuid
 from concurrent.futures import ThreadPoolExecutor
 import time
+import argparse
+
+
 
 def create_bounding_boxes_from_mask(mask):
     """
@@ -31,8 +34,12 @@ def create_bounding_boxes_from_mask(mask):
     
     # Create bounding boxes for each contour
     bounding_boxes = [cv2.boundingRect(contour) for contour in contours]
+    if bounding_boxes:
+        result = [(_[0], _[1], _[0] + _[2], _[1] + _[3]) for _ in bounding_boxes]
     
-    return bounding_boxes
+        return result
+    else:
+        return bounding_boxes
 
 
 # mask = np.zeros((200, 200), dtype=np.uint8)
@@ -102,8 +109,7 @@ def load_image(img_path):
     logger.info(f"Loaded image {img_path} in {end_time - start_time:.2f} seconds.")
     return img_path, image
 
-def process_batch(batch):
-    batch_start_time = time.time()
+def process_batch(batch, save_dir):
     
     # 记录模型推理时间
     inference_start_time = time.time()
@@ -111,51 +117,111 @@ def process_batch(batch):
     inference_end_time = time.time()
     logger.info(f"Model inference time: {inference_end_time - inference_start_time:.2f} seconds.")
     
+    
     # 处理和保存结果
-    process_results_start_time = time.time()
     for result, img_path in zip(results, batch):
-        out_path = os.path.join(out_dir, "_".join(img_path.split("/")[-2:]).replace(".jpg", ".png"))
-        os.makedirs(out_dir, exist_ok=True)
-        tensor_img = result.pred_sem_seg.data[0]
-        tensor_img_cpu = tensor_img.cpu().numpy()
-        print(tensor_img_cpu)
-        output = tensor_to_image_2(tensor_img, category_colors)
-        output.save("haha.png")
-        mask = (tensor_img_cpu == 48).astype(int)
-        print(np.any(mask == 1))
-        print(create_bounding_box_from_mask(mask))
+        basename = img_path.split("/")[-1].split(".")[0]
+        save_name = "%s/%s.json" % (save_dir, basename)
+        result_dict = dict()
         
-    batch_end_time = time.time()
-    logger.info(f"Processed batch in {batch_end_time - batch_start_time:.2f} seconds.")
+        tensor_img = result.pred_sem_seg.data[0]
+        # output = tensor_to_image_2(tensor_img, category_colors)
+        
+        tensor_img_cpu = tensor_img.cpu().numpy()
+        # traffic light
+        mask_light = (tensor_img_cpu == 48).astype(int)
+        # traffic sign
+        mask_sign = (tensor_img_cpu == 50).astype(int)
+        
+        bboxs_light = create_bounding_boxes_from_mask(mask_light)
+        bboxs_sign = create_bounding_boxes_from_mask(mask_sign)
+        
+        tensor_prob = result.seg_logits.data
+        tensor_prob_cpu = tensor_prob.cpu().numpy()
+        
+        scores = []
+        for bbox in bboxs_light:
+            x1, y1, x2, y2 = bbox
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            score = tensor_prob_cpu[48][center_y, center_x]
+            
+            grid_start_x = max(center_x - 1, 0)
+            grid_end_x = min(center_x + 1, tensor_prob_cpu.shape[2] - 1)
+            grid_start_y = max(center_y - 1, 0)
+            grid_end_y = min(center_y + 1, tensor_prob_cpu.shape[1] - 1)
+            
+            # Extract the grid and compute the average score
+            grid_values = tensor_prob_cpu[48][grid_start_y:grid_end_y+1, grid_start_x:grid_end_x+1]
+            score = np.mean(grid_values)
+            
+            scores.append(float(score))
+            
+        for bbox in bboxs_sign:
+            x1, y1, x2, y2 = bbox
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            score = tensor_prob_cpu[50][center_y, center_x]
+            
+            grid_start_x = max(center_x - 1, 0)
+            grid_end_x = min(center_x + 1, tensor_prob_cpu.shape[2] - 1)
+            grid_start_y = max(center_y - 1, 0)
+            grid_end_y = min(center_y + 1, tensor_prob_cpu.shape[1] - 1)
+            
+            # Extract the grid and compute the average score
+            grid_values = tensor_prob_cpu[50][grid_start_y:grid_end_y+1, grid_start_x:grid_end_x+1]
+            score = np.mean(grid_values)
+            
+            scores.append(float(score))
+        
+        result_dict["labels"] = [0] * len(bboxs_light) + [1] * len(bboxs_sign)
+        result_dict["bboxes"] = bboxs_light + bboxs_sign
+        result_dict["scores"] = scores
+        
+        with open(save_name, 'w') as file:
+            json.dump(result_dict, file)
 
+        # draw = ImageDraw.Draw(output)
+        # for bbox in bboxs_sign:
+        #     x1, y1, x2, y2 = bbox
+        #     draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
+            
+        # for bbox in bboxs_light:
+        #     x1, y1, x2, y2 = bbox
+        #     draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
+                
+        # output.save("haha.png")
+            
 def chunk_list(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
         
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('start', type=int)
+    parser.add_argument('end', type=int)
+    parser.add_argument('gpuid', default=0, type=int)
+    args = parser.parse_args()
+    
     total_start_time = time.time()
     logger = logging.getLogger()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
     
-    # img_dir = "/share2/zhulin/images/train"
-    img_dir = "/root/mmsegmentation/data/test/trafficlight"
-    img_list = list_image_files_in_directory(img_dir)[:10]
+    img_dir = "/share/zhulin/images/train"
+    # img_dir = "/root/mmsegmentation/data/test/trafficlight"
+    img_list = list_image_files_in_directory(img_dir)[args.start:args.end]
+    
+    save_dir = "/share/zhulin/songyuhao/seg_inf/train"
 
     config_path = '/root/mmsegmentation/configs/dinov2/dinov2_vitg_mask2former_240k_mapillary_v2-672x672_online.py'
     checkpoint_path = '/root/models/seg_0626.pth'
 
-    out_dir = "/cpfs/temp_img"
-    output_json_dir = '/cpfs/output/hds/semantic'
-    os.makedirs(out_dir, exist_ok=True)
-    os.makedirs(output_json_dir, exist_ok=True)
-
-    add_labels = False 
     batch_size = 1
 
     logger.info('Initializing model...')
     start_time = time.time()
-    model = init_model(config_path, checkpoint_path, device='cuda:0')
+    model = init_model(config_path, checkpoint_path, device='cuda:%d' % args.gpuid)
     end_time = time.time()
     logger.info(f'Model initialized successfully in {end_time - start_time:.2f} seconds.')
 
@@ -163,6 +229,6 @@ if __name__ == '__main__':
     print(len(img_list), img_list)
     batches = list(chunk_list(img_list, batch_size))
     for batch in tqdm(batches, desc="Processing Batches"):
-        process_batch(batch)
+        process_batch(batch, save_dir)
     total_end_time = time.time()
     logger.info(f"Total processing time: {total_end_time - total_start_time:.2f} seconds.")
